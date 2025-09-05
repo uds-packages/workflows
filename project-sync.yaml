@@ -14,7 +14,7 @@ jobs:
     permissions:
       contents: read
       issues: read
-    uses: ./.github/workflows/callable-project-sync.yaml
+    uses: uds-packages/maintenance/.github/workflows/callable-project-sync.yaml@add_project_sync_workflow
     with:
       destination_org: uds-packages
       project_number: 2
