@@ -23,16 +23,16 @@ on:
         required: true
         type: string
       package_deps_categorization:
-        description: "Enable automatic categorization for package-deps items"
+        description: "Enable automatic categorization for package dependency items"
         required: false
         type: boolean
         default: true
       project_field_name:
-        description: "Project field name to set for package-deps (default: Category)"
+        description: "Project field name to set for package dependency (default: Category)"
         required: false
         type: string
       project_field_value:
-        description: "Project field value to assign for package-deps (default: Maintenance)"
+        description: "Project field value to assign for package dependency  (default: Maintenance)"
         required: false
         type: string
     secrets:
@@ -165,14 +165,14 @@ jobs:
           ITEM_ID=$(jq -r '.data.addProjectV2ItemById.item.id' add.json)
           echo "item_id=$ITEM_ID" >> $GITHUB_OUTPUT
 
-      # Check for package-deps label
-      - name: Check for package-deps label
+      # Check for package deps labels
+      - name: Check for package deps labels
         id: pkgcheck
         if: steps.additem.outputs.item_id != '' && env.PACKAGE_DEPS_CATEGORIZATION == 'true'
         run: |
           set -e
           HAVE="${{ steps.fetchlabels.outputs.labels }}"
-          echo "$HAVE" | tr ',' '\n' | grep -qx "package-deps" && echo "has_pkg=true" >> $GITHUB_OUTPUT || echo "has_pkg=false" >> $GITHUB_OUTPUT
+          echo "$HAVE" | tr ',' '\n' | grep -Eq "^(package|support)-deps$" && echo "has_pkg=true" >> $GITHUB_OUTPUT || echo "has_pkg=false" >> $GITHUB_OUTPUT
 
       # Resolve field and option for configurable field/value
       - name: Resolve field and option
