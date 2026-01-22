@@ -22,6 +22,19 @@ on:
         description: "github app app_id"
         required: true
         type: string
+      package_deps_categorization:
+        description: "Enable automatic categorization for package dependency items"
+        required: false
+        type: boolean
+        default: true
+      project_field_name:
+        description: "Project field name to set for package dependency (default: Category)"
+        required: false
+        type: string
+      project_field_value:
+        description: "Project field value to assign for package dependency  (default: Maintenance)"
+        required: false
+        type: string
     secrets:
       APP_PRIVATE_KEY:
         required: true
@@ -40,6 +53,9 @@ jobs:
       PROJECT_NUMBER:  ${{ inputs.project_number }}
       FILTER_LABELS:   ${{ inputs.filter_labels }}
       LABEL_OPERATOR:  ${{ inputs.label_operator || 'OR' }}
+      PACKAGE_DEPS_CATEGORIZATION: ${{ inputs.package_deps_categorization }}
+      PROJECT_FIELD_NAME:  ${{ inputs.project_field_name || 'Category' }}
+      PROJECT_FIELD_VALUE: ${{ inputs.project_field_value || 'Maintenance' }}
     steps:
 
       - name: Generate App Token To Write to Project
@@ -135,6 +151,7 @@ jobs:
 
       # Add the item to the project (shows real errors if any)
       - name: Add item to Project
+        id: additem
         if: steps.pick.outputs.skip != 'true' && (steps.labelfilter.outcome == 'skipped' || steps.labelfilter.outputs.labels_ok == 'true')
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
@@ -143,4 +160,83 @@ jobs:
           gh api graphql -f query='
             mutation($p:ID!, $c:ID!) {
               addProjectV2ItemById(input:{projectId:$p, contentId:$c}) { item { id } }
-            }' -f p="$PROJECT_ID" -f c="${{ steps.pick.outputs.content_id }}"
+            }' -f p="$PROJECT_ID" -f c="${{ steps.pick.outputs.content_id }}" > add.json
+
+          ITEM_ID=$(jq -r '.data.addProjectV2ItemById.item.id' add.json)
+          echo "item_id=$ITEM_ID" >> $GITHUB_OUTPUT
+
+      # Check for package deps labels
+      - name: Check for package deps labels
+        id: pkgcheck
+        if: steps.additem.outputs.item_id != '' && env.PACKAGE_DEPS_CATEGORIZATION == 'true'
+        run: |
+          set -e
+          HAVE="${{ steps.fetchlabels.outputs.labels }}"
+          echo "$HAVE" | tr ',' '\n' | grep -Eq "^(package|support)-deps$" && echo "has_pkg=true" >> $GITHUB_OUTPUT || echo "has_pkg=false" >> $GITHUB_OUTPUT
+
+      # Resolve field and option for configurable field/value
+      - name: Resolve field and option
+        id: categoryfield
+        if: steps.pkgcheck.outputs.has_pkg == 'true' && env.PACKAGE_DEPS_CATEGORIZATION == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+        run: |
+          set -e
+          gh api graphql -f query='
+            query($org:String!, $num:Int!) {
+              organization(login:$org) {
+                projectV2(number:$num) {
+                  fields(first:100) {
+                    nodes {
+                      ... on ProjectV2FieldCommon {
+                        id
+                        name
+                      }
+                      ... on ProjectV2SingleSelectField {
+                        id
+                        name
+                        options {
+                          id
+                          name
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }' -f org="$DESTINATION_ORG" -F num="$PROJECT_NUMBER" > fields.json
+
+          FIELD_ID=$(jq -r '.data.organization.projectV2.fields.nodes[]
+            | select(.name=="'"$PROJECT_FIELD_NAME"'") | .id' fields.json)
+
+          VALUE_ID=$(jq -r '.data.organization.projectV2.fields.nodes[]
+            | select(.name=="'"$PROJECT_FIELD_NAME"'")
+            | .options[] | select(.name=="'"$PROJECT_FIELD_VALUE"'") | .id' fields.json)
+
+          echo "field_id=$FIELD_ID" >> $GITHUB_OUTPUT
+          echo "value_id=$VALUE_ID" >> $GITHUB_OUTPUT
+
+      # Set the configured project field value
+      - name: Set project field value
+        if: steps.pkgcheck.outputs.has_pkg == 'true' && env.PACKAGE_DEPS_CATEGORIZATION == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+        run: |
+          set -e
+          gh api graphql -f query='
+            mutation($project:ID!, $item:ID!, $field:ID!, $value:String!) {
+              updateProjectV2ItemFieldValue(
+                input: {
+                  projectId: $project
+                  itemId: $item
+                  fieldId: $field
+                  value: { singleSelectOptionId: $value }
+                }
+              ) {
+                projectV2Item { id }
+              }
+            }' \
+            -f project="$PROJECT_ID" \
+            -f item="${{ steps.additem.outputs.item_id }}" \
+            -f field="${{ steps.categoryfield.outputs.field_id }}" \
+            -f value="${{ steps.categoryfield.outputs.value_id }}"
